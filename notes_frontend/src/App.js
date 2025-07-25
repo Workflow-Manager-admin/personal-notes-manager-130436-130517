@@ -1,10 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
+import NavigationBar from './components/NavigationBar';
+import AuthForm from './components/AuthForm';
+import NoteList from './components/NoteList';
+import NoteModal from './components/NoteModal';
+import {
+  apiLogin,
+  apiRegister,
+  apiLogout,
+  apiFetchNotes,
+  apiCreateNote,
+  apiUpdateNote,
+  apiDeleteNote,
+} from './api';
 
 /**
  * App implements authentication (login/register/logout), 
  * notes listing, creation, edition, and deletion, with
  * live validation, persistent auth, and a responsive layout.
+ * Now uses centralized api.js methods and decoupled UI components for robust frontend-backend integration.
  */
 
 // PUBLIC_INTERFACE
@@ -13,161 +27,121 @@ function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('token') || null);
 
-  // Auth modal/dialog state
+  // Auth modals/forms
   const [showLogin, setShowLogin] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
-
-  // Auth form state
-  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
-  const [registerForm, setRegisterForm] = useState({ username: '', password: '' });
   const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
 
   // Notes state
   const [notes, setNotes] = useState([]);
   const [notesLoading, setNotesLoading] = useState(false);
   const [notesError, setNotesError] = useState('');
+  const [deletePendingId, setDeletePendingId] = useState(null);
 
-  // Note editor modal
+  // New/Edit Note Modal
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [isEditingNote, setIsEditingNote] = useState(false);
-  const [noteForm, setNoteForm] = useState({ id: null, title: '', content: '' });
-  const [noteFormError, setNoteFormError] = useState('');
-  const [noteDeletePending, setNoteDeletePending] = useState(null);
+  const [noteModalError, setNoteModalError] = useState('');
+  const [noteModalLoading, setNoteModalLoading] = useState(false);
+  const [activeNote, setActiveNote] = useState({ id: null, title: '', content: '' });
 
   // Search
   const [search, setSearch] = useState('');
   const [searchDebounced, setSearchDebounced] = useState('');
   const searchRef = useRef();
 
-  // UI theme
+  // UI Theme
   const [theme, setTheme] = useState('light');
-
-  // Backend endpoint base
-  const API_BASE = '/api';
-
-  // ---- THEME
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
-  const toggleTheme = () => {
-    setTheme(prevTheme => prevTheme === 'light' ? 'dark' : 'light');
-  };
+  const handleToggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
 
-  // ---- AUTHENTICATION
+  // ---- AUTHENTICATION ----
   useEffect(() => {
-    if (token) {
-      // Try fetching user profile OR any simple authenticated req to check validity
-      fetchMe(token).then(res => {
-        if (res) setUser(res);
-        else handleLogout();
-      });
-    } else {
+    if (!token) {
       setUser(null);
+      setNotes([]);
+      localStorage.removeItem('token');
+      return;
     }
+    // Check login by attempting to fetch notes
+    (async () => {
+      try {
+        await apiFetchNotes(token, '');
+        setUser({ username: "user" }); // There's no profile endpoint
+      } catch {
+        handleLogout();
+      }
+    })();
     // eslint-disable-next-line
   }, [token]);
-  function handleLoginModal(open = true) {
-    setShowLogin(open);
+
+  const handleLoginModal = () => {
+    setShowLogin(true);
+    setShowRegister(false);
     setAuthError('');
-    setLoginForm({ username: '', password: '' });
-  }
-  function handleRegisterModal(open = true) {
-    setShowRegister(open);
+  };
+  const handleRegisterModal = () => {
+    setShowRegister(true);
+    setShowLogin(false);
     setAuthError('');
-    setRegisterForm({ username: '', password: '' });
-  }
-  function handleLoginSubmit(e) {
-    e.preventDefault();
+  };
+  // Login
+  const handleLogin = async ({ username, password }) => {
+    setAuthLoading(true);
     setAuthError('');
-    if (!loginForm.username.trim() || !loginForm.password.trim()) {
-      setAuthError('Please fill in all fields');
-      return;
+    try {
+      const resp = await apiLogin({ username, password });
+      setToken(resp.token);
+      localStorage.setItem('token', resp.token);
+      setShowLogin(false);
+      setUser({ username });
+    } catch (err) {
+      setAuthError(err.detail || 'Invalid credentials');
     }
-    // POST /login/
-    fetch(`${API_BASE}/login/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: loginForm.username, password: loginForm.password })
-    })
-      .then(r => r.ok ? r.json() : r.json().then(data => Promise.reject(data)))
-      .then(data => {
-        // If backend returns token, store it
-        if (data.token) {
-          setToken(data.token);
-          localStorage.setItem('token', data.token);
-          setShowLogin(false);
-        } else {
-          setAuthError('Invalid credentials');
-        }
-      })
-      .catch(err => {
-        setAuthError('Login failed: ' + (err.detail || 'Invalid credentials'));
-      });
-  }
-  function handleRegisterSubmit(e) {
-    e.preventDefault();
+    setAuthLoading(false);
+  };
+  // Register
+  const handleRegister = async ({ username, password }) => {
+    setAuthLoading(true);
     setAuthError('');
-    if (!registerForm.username.trim() || !registerForm.password.trim()) {
-      setAuthError('Please fill in all fields');
-      return;
+    try {
+      await apiRegister({ username, password });
+      setShowRegister(false);
+      handleLoginModal();
+    } catch (err) {
+      setAuthError(err.detail || 'Registration failed');
     }
-    // POST /register/
-    fetch(`${API_BASE}/register/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: registerForm.username, password: registerForm.password })
-    })
-      .then(r => r.ok ? r.json() : r.json().then(data => Promise.reject(data)))
-      .then(data => {
-        // Auto-login after registration
-        handleLoginModal(true);
-        setRegisterForm({ username: '', password: '' });
-        setShowRegister(false);
-      })
-      .catch(err => {
-        setAuthError('Registration failed: ' + (err.detail || 'Try another username'));
-      });
-  }
+    setAuthLoading(false);
+  };
   // Logout
-  function handleLogout() {
-    setToken(null);
+  const handleLogout = async () => {
     setUser(null);
+    setToken(null);
     localStorage.removeItem('token');
-    // Optionally: call /logout/
-    fetch(`${API_BASE}/logout/`, {
-      method: 'POST',
-      headers: token ? { 'Authorization': `Token ${token}` } : {}
-    }).catch(() => {});
-  }
+    try {
+      await apiLogout(token); // fire & forget
+    } catch {}
+    setNotes([]);
+  };
 
-  async function fetchMe(_token) {
-    // There may not be a profile endpoint; as a workaround, load notes with auth to check
-    return fetch(`${API_BASE}/notes/`, {
-      headers: { 'Authorization': `Token ${_token}` }
-    })
-      .then(r => r.ok ? { username: 'user' } : null)
-      .catch(() => null);
-  }
-
-  // ---- NOTES
-  // List notes (with search), whenever logged in or search changes
+  // ---- NOTES ----
+  // Fetch notes (debounced search or on login)
   useEffect(() => {
     if (!token) {
       setNotes([]);
       return;
     }
     setNotesLoading(true);
-    let url = `${API_BASE}/notes/`;
-    if (searchDebounced) url += `?search=${encodeURIComponent(searchDebounced)}`;
-    fetch(url, {
-      headers: { 'Authorization': `Token ${token}` }
-    })
-      .then(r => r.ok ? r.json() : Promise.reject('Failed to fetch notes'))
+    setNotesError('');
+    apiFetchNotes(token, searchDebounced)
       .then(data => {
         setNotes(data || []);
         setNotesError('');
       })
-      .catch((e) => {
+      .catch(() => {
         setNotes([]);
         setNotesError('Failed to fetch notes');
       })
@@ -181,104 +155,70 @@ function App() {
     return () => searchRef.current && clearTimeout(searchRef.current);
   }, [search]);
 
-  function openNewNoteModal() {
+  // New/Edit Modal Handlers
+  const openNewNoteModal = () => {
+    setShowNoteModal(true);
     setIsEditingNote(false);
-    setNoteForm({ id: null, title: '', content: '' });
-    setNoteFormError('');
+    setNoteModalError('');
+    setActiveNote({ id: null, title: '', content: '' });
+  };
+  const openEditNoteModal = (note) => {
     setShowNoteModal(true);
-  }
-  function openEditNoteModal(note) {
     setIsEditingNote(true);
-    setNoteForm({ id: note.id, title: note.title || '', content: note.content || '' });
-    setNoteFormError('');
-    setShowNoteModal(true);
-  }
-  function closeNoteModal() {
+    setNoteModalError('');
+    setActiveNote({ id: note.id, title: note.title, content: note.content || '' });
+  };
+  const closeNoteModal = () => {
     setShowNoteModal(false);
-    setNoteFormError('');
-  }
-  function handleNoteFormChange(e) {
-    const { name, value } = e.target;
-    setNoteForm(f => ({ ...f, [name]: value }));
-    if (name === 'title' && value.length < 1) {
-      setNoteFormError('Title is required');
-    } else {
-      setNoteFormError('');
+    setNoteModalError('');
+    setActiveNote({ id: null, title: '', content: '' });
+    setNoteModalLoading(false);
+  };
+  // Create/Update Note (modal submit)
+  const handleNoteModalSubmit = async (form) => {
+    setNoteModalLoading(true);
+    setNoteModalError('');
+    try {
+      if (isEditingNote) {
+        await apiUpdateNote(token, activeNote.id, { title: form.title.trim(), content: form.content });
+      } else {
+        await apiCreateNote(token, { title: form.title.trim(), content: form.content });
+      }
+      closeNoteModal();
+      // Refresh notes
+      setSearchDebounced(s => s + '');
+    } catch (err) {
+      setNoteModalError(
+        err?.title?.[0] || err?.detail || 'Failed to save note'
+      );
     }
-  }
-  function handleNoteFormSubmit(e) {
-    e.preventDefault();
-    if (!noteForm.title.trim()) {
-      setNoteFormError('Title is required');
-      return;
+    setNoteModalLoading(false);
+  };
+  // Delete Note
+  const handleNoteDelete = async (note) => {
+    setDeletePendingId(note.id);
+    try {
+      await apiDeleteNote(token, note.id);
+      setSearchDebounced(s => s + '');
+    } catch {
+      alert('Failed to delete note');
     }
-    const method = isEditingNote ? 'PUT' : 'POST';
-    const url = isEditingNote ? `${API_BASE}/notes/${noteForm.id}/` : `${API_BASE}/notes/`;
-    fetch(url, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Token ${token}`,
-      },
-      body: JSON.stringify({ title: noteForm.title.trim(), content: noteForm.content }),
-    })
-      .then(r => r.ok ? r.json() : r.json().then(data => Promise.reject(data)))
-      .then(data => {
-        closeNoteModal();
-        // Refresh notes
-        setSearchDebounced(s => s + '');
-      })
-      .catch(err => {
-        setNoteFormError('Failed to save note: ' + (err?.title?.[0] || err?.detail || 'Unknown error'));
-      });
-  }
-  function handleNoteDelete(note) {
-    setNoteDeletePending(note.id);
-    fetch(`${API_BASE}/notes/${note.id}/`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Token ${token}`,
-      },
-    })
-      .then(r => {
-        setNoteDeletePending(null);
-        setSearchDebounced(s => s + '');
-      })
-      .catch(() => {
-        setNoteDeletePending(null);
-        alert('Failed to delete note');
-      });
-  }
+    setDeletePendingId(null);
+  };
 
-  // ---- RENDER
-
+  // ---- RENDER ----
   return (
     <div className="App">
-      {/* NAVBAR */}
-      <nav className="navbar" style={navbarStyle}>
-        <div className="navbar-brand">
-          <span style={{ fontWeight: 700, fontSize: '1.25rem', color: '#1976D2', letterSpacing: 1 }}>📝 NotesApp</span>
-        </div>
-        <div className="navbar-actions">
-          <button className="theme-toggle" onClick={toggleTheme}
-            aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}>
-            {theme === 'light' ? '🌙' : '☀️'}
-          </button>
-          {user ? (
-            <>
-              <span style={userLabelStyle}>Hello!</span>
-              <button className="btn" style={linkBtnStyle} onClick={handleLogout}>Logout</button>
-            </>
-          ) : (
-            <>
-              <button className="btn" style={linkBtnStyle} onClick={() => handleLoginModal(true)}>Login</button>
-              <button className="btn" style={linkBtnStyle} onClick={() => handleRegisterModal(true)}>Register</button>
-            </>
-          )}
-        </div>
-      </nav>
+      {/* NavigationBar */}
+      <NavigationBar
+        user={user}
+        onLogin={handleLoginModal}
+        onLogout={handleLogout}
+        onRegister={handleRegisterModal}
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
+      />
 
-      {/* MAIN CONTENT */}
       <main className="container" style={containerStyle}>
         {!user ? (
           <div style={{ marginTop: '3rem', textAlign: 'center' }}>
@@ -287,7 +227,7 @@ function App() {
           </div>
         ) : (
           <>
-            {/* SEARCH and ADD */}
+            {/* Search/add toolbar */}
             <div className="notes-toolbar" style={toolbarStyle}>
               <input
                 type="text"
@@ -299,154 +239,78 @@ function App() {
               />
               <button className="btn btn-accent" style={accentBtnStyle} onClick={openNewNoteModal}>+ New Note</button>
             </div>
-            {/* NOTE LIST */}
-            {notesLoading ? (
-              <div>Loading notes...</div>
-            ) : notesError ? (
-              <div style={{ color: 'red' }}>{notesError}</div>
-            ) : notes.length === 0 ? (
-              <div>No notes found.</div>
-            ) : (
-              <div className="notes-list" style={notesListStyle}>
-                {notes.map(note => (
-                  <div className="note-card" key={note.id} style={noteCardStyle}>
-                    <h4 style={noteTitleStyle}>{note.title}</h4>
-                    <div style={noteContentStyle}>
-                      {note.content ? note.content : <span style={{ opacity: 0.6, fontStyle: 'italic' }}>No content</span>}
-                    </div>
-                    <div style={noteMetaStyle}>
-                      <div style={{ fontSize: 12, color: '#888' }}>
-                        {note.updated_at ? new Date(note.updated_at).toLocaleString() : ''}
-                      </div>
-                      <div>
-                        <button className="btn" style={noteBtnStyle}
-                          onClick={() => openEditNoteModal(note)}>Edit</button>
-                        <button className="btn" style={{ ...noteBtnStyle, color: '#d32f2f' }}
-                          disabled={noteDeletePending === note.id}
-                          onClick={() => handleNoteDelete(note)}>
-                          {noteDeletePending === note.id ? 'Deleting...' : 'Delete'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            {/* NoteList */}
+            <NoteList
+              notes={notes}
+              isLoading={notesLoading}
+              error={notesError}
+              onEdit={openEditNoteModal}
+              onDelete={handleNoteDelete}
+              deletePendingId={deletePendingId}
+            />
           </>
         )}
       </main>
-
-      {/* LOGIN MODAL */}
+      {/* Auth Modals */}
       {showLogin && (
         <Modal onClose={() => setShowLogin(false)}>
           <h3>Login</h3>
-          <form onSubmit={handleLoginSubmit} style={modalFormStyle}>
-            <input
-              type="text"
-              name="username"
-              placeholder="Username"
-              value={loginForm.username}
-              autoFocus
-              autoComplete="username"
-              onChange={e => setLoginForm(f => ({ ...f, username: e.target.value }))}
-              style={inputStyle}
-            />
-            <input
-              type="password"
-              name="password"
-              placeholder="Password"
-              autoComplete="current-password"
-              value={loginForm.password}
-              onChange={e => setLoginForm(f => ({ ...f, password: e.target.value }))}
-              style={inputStyle}
-            />
-            {authError && <div style={errorTextStyle}>{authError}</div>}
-            <button className="btn btn-accent" type="submit" style={accentBtnStyle}>Log In</button>
-            <div style={{ marginTop: 10, fontSize: 13 }}>
-              Don't have an account?{' '}
-              <span
-                style={{ color: "#1976D2", cursor: "pointer" }}
-                onClick={() => { setShowLogin(false); setTimeout(() => setShowRegister(true), 100) }}>
-                Register here
-              </span>
-            </div>
-          </form>
+          <AuthForm
+            mode="login"
+            onSubmit={handleLogin}
+            onClose={() => setShowLogin(false)}
+            error={authError}
+            isLoading={authLoading}
+          />
+          <div style={{ marginTop: 15, fontSize: 13 }}>
+            Don't have an account?{' '}
+            <span
+              style={{ color: "#1976D2", cursor: "pointer" }}
+              onClick={() => { setShowLogin(false); setTimeout(() => setShowRegister(true), 100); }}
+            >
+              Register here
+            </span>
+          </div>
         </Modal>
       )}
-
-      {/* REGISTER MODAL */}
       {showRegister && (
         <Modal onClose={() => setShowRegister(false)}>
           <h3>Register</h3>
-          <form onSubmit={handleRegisterSubmit} style={modalFormStyle}>
-            <input
-              type="text"
-              name="username"
-              placeholder="Username"
-              value={registerForm.username}
-              autoFocus
-              autoComplete="username"
-              onChange={e => setRegisterForm(f => ({ ...f, username: e.target.value }))}
-              style={inputStyle}
-            />
-            <input
-              type="password"
-              name="password"
-              autoComplete="new-password"
-              placeholder="Password"
-              value={registerForm.password}
-              onChange={e => setRegisterForm(f => ({ ...f, password: e.target.value }))}
-              style={inputStyle}
-            />
-            {authError && <div style={errorTextStyle}>{authError}</div>}
-            <button className="btn btn-accent" type="submit" style={accentBtnStyle}>Register</button>
-            <div style={{ marginTop: 10, fontSize: 13 }}>
-              Already have an account?{' '}
-              <span
-                style={{ color: "#1976D2", cursor: "pointer" }}
-                onClick={() => { setShowRegister(false); setTimeout(() => setShowLogin(true), 100) }}>
-                Login here
-              </span>
-            </div>
-          </form>
+          <AuthForm
+            mode="register"
+            onSubmit={handleRegister}
+            onClose={() => setShowRegister(false)}
+            error={authError}
+            isLoading={authLoading}
+          />
+          <div style={{ marginTop: 15, fontSize: 13 }}>
+            Already have an account?{' '}
+            <span
+              style={{ color: "#1976D2", cursor: "pointer" }}
+              onClick={() => { setShowRegister(false); setTimeout(() => setShowLogin(true), 100); }}
+            >
+              Login here
+            </span>
+          </div>
         </Modal>
       )}
-
-      {/* NOTE EDIT/CREATE MODAL */}
-      {showNoteModal && (
-        <Modal onClose={closeNoteModal}>
-          <h3>{isEditingNote ? 'Edit Note' : 'Create Note'}</h3>
-          <form onSubmit={handleNoteFormSubmit} style={modalFormStyle}>
-            <input
-              type="text"
-              name="title"
-              placeholder="Title"
-              maxLength={255}
-              autoFocus
-              value={noteForm.title}
-              onChange={handleNoteFormChange}
-              style={inputStyle}
-              required
-            />
-            <textarea
-              name="content"
-              placeholder="Content"
-              rows={5}
-              value={noteForm.content}
-              onChange={handleNoteFormChange}
-              style={textareaStyle}
-            />
-            {noteFormError && <div style={errorTextStyle}>{noteFormError}</div>}
-            <div style={{ display: 'flex', gap: '1em', marginTop: 16 }}>
-              <button className="btn btn-accent" type="submit" style={accentBtnStyle}>{isEditingNote ? 'Save' : 'Create'}</button>
-              <button className="btn" type="button" style={linkBtnStyle} onClick={closeNoteModal}>Cancel</button>
-            </div>
-          </form>
-        </Modal>
-      )}
+      {/* Note modal for edit/new */}
+      <NoteModal
+        initialNote={activeNote}
+        isOpen={showNoteModal}
+        isEditing={isEditingNote}
+        error={noteModalError}
+        isLoading={noteModalLoading}
+        onSubmit={handleNoteModalSubmit}
+        onCancel={closeNoteModal}
+      />
     </div>
   );
 }
+
+
+
+
 
 // -- Reusable Modal component (not PUBLIC_INTERFACE as internal)
 function Modal({ children, onClose }) {
